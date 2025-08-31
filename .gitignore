@@ -1,32 +1,35 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
 # Binaries for programs and plugins
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
-*.test
+# Test binaries
+*_test
 
-# Code coverage profiles and other test artifacts
+# Editor/IDE specific files
+.idea/
+.vscode/
+*.swp
+*.bak
+*.log
+
+# Build artifacts and caches
+/bin/
+/pkg/
+/tmp/
+/build/
 *.out
-coverage.*
-*.coverprofile
-profile.cov
+*.exe
+*.test
+*.prof
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency management (Go Modules)
+# The 'vendor/' directory is typically ignored if you are using Go Modules
+# and want to rely on the `go.mod` and `go.sum` for dependency management.
+# However, some projects might choose to commit the vendor directory for specific reasons.
+vendor/
 
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
+# Environment specific files
 .env
-
-# Editor/IDE
-# .idea/
-# .vscode/
+.local
