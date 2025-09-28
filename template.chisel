@@ -1,0 +1,51 @@
+prelude {
+	#include <istream>
+	#include <string>
+}
+
+EXPR = INT | FLOAT
+VARIABLE = VAR ID (EQ EXPR)?
+
+stat (
+	EQ = "="
+	VAR = "var"
+	PRIV = "priv"
+	PROT = (std::istream &s) {
+		char buf[4];
+		s.read(buf, 4);
+		if (strncmp("prot", buf, 4) == 0)
+			return StaticToken::PROT;
+		s.seekg(-4, std::ios::cur);
+		return Token::failed;
+	}
+)
+
+stat PUB = "pub"
+
+stat TYPE = (std::istream &s) {
+	char buf[4];
+	s.read(buf, 4);
+	if (strncmp("type", buf, 4) == 0)
+		return StaticToken::TYPE;
+	s.seekg(-4, std::ios::cur);
+	return Token::failed;
+}
+
+dyn (
+	FLOAT = [0-9]*\.[0-9]+
+)
+
+dyn INT = [0-9]+
+
+dyn ID = (std::istream &s) {
+	std::string buf;
+	auto c = s.get();
+	if (std::isalpha(c) || c == '_') {
+		buf.push_back(c);
+		for (c = s.get(); std::isalnum(c) || c == '_'; c = s.get())
+			buf.push_back(c);
+		return new DynamicToken(Token::ID, buf);
+	}
+	s.unget(c);
+	return Token::failed;
+}
