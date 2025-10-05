@@ -13,8 +13,7 @@ type splitterTokenType int
 const (
 	PREFIX splitterTokenType = iota
 	SUFFIX
-	STAT
-	DYN
+	TOK
 	SKIP
 
 	O_BRACE
@@ -59,11 +58,8 @@ func syntaxTokenType(token []byte) splitterTokenType {
 	if eq(token, "suffix") {
 		return SUFFIX
 	}
-	if eq(token, "stat") {
-		return STAT
-	}
-	if eq(token, "dyn") {
-		return DYN
+	if eq(token, "tok") {
+		return TOK
 	}
 	if eq(token, "skip") {
 		return SKIP
@@ -124,8 +120,7 @@ func syntaxReader(r *bufio.Reader) func() (string, error) {
 		reserved := []string{
 			"prefix",
 			"suffix",
-			"stat",
-			"dyn",
+			"tok",
 			"skip",
 
 			"{",
@@ -211,11 +206,17 @@ func stringReader(r *bufio.Reader) func() (string, error) {
 
 			if slash {
 				slash = false
+				if err := buffer.WriteByte(c); err != nil {
+					return "", err
+				}
 				continue
 			}
 
 			if c == '\\' {
 				slash = true
+				if err := buffer.WriteByte(c); err != nil {
+					return "", err
+				}
 				continue
 			}
 
@@ -225,10 +226,11 @@ func stringReader(r *bufio.Reader) func() (string, error) {
 
 			if c == quote {
 				lit := buffer.String()
-				if _, err := strconv.Unquote(lit); err != nil {
+				unquoted, err := strconv.Unquote(lit)
+				if err != nil {
 					return "", err
 				}
-				return lit, nil
+				return unquoted, nil
 			}
 		}
 	}

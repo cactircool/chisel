@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+type ConstructRefRegex struct {
+	Name string
+}
+
+func (c *ConstructRefRegex) String() string {
+	return c.Name
+}
+
 type SimpleConstruct struct {
 	Name  string
 	Value string
@@ -26,19 +34,17 @@ func (c *Construct) ConstructToCppFunction() string {
 	createdConstructs[c.Name] = true
 	return fmt.Sprintf(
 		`
-		%s
-		_ParseNode *construct_%s(std::istream &reader) {
-			auto *node = new _ParseNode;
+		Parser::Node Parser::construct_%s(std::istream &reader) {
+			Node node(new ParseNode(ParseNode::Type::%s));
 			if (!%s) {
-				delete node;
-				return nullptr;
+				return Node::failed;
 			}
 			return node;
 		}
 		`,
-		c.Value.RegexToCppFunction(),
 		c.Name,
-		RegexCall(c.Value, "reader", "node->children"),
+		c.Name,
+		RegexCall(c.Value, "reader", "node.get_node()->get_children()"),
 	)
 }
 
@@ -48,7 +54,7 @@ func (c *Construct) ConstructToCppPrototype() string {
 	}
 
 	prototypedConstructs[c.Name] = true
-	return fmt.Sprintf("%s\n_ParseNode *%s;", c.Value.RegexToCppPrototype(), c.Call("std::istream &"))
+	return fmt.Sprintf("static Node %s;", c.Call("std::istream &"))
 }
 
 func (c *Construct) Call(args ...string) string {
@@ -60,7 +66,7 @@ func (c *Construct) String() string {
 	ChiselTabs++
 	after := before + "\t"
 
-	s := "Unit {\n" +
+	s := "Construct {\n" +
 		fmt.Sprintf("%s.Name = %s\n", after, c.Name) +
 		fmt.Sprintf("%s.Value = %s\n", after, c.Value.String()) +
 		before + "}"

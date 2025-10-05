@@ -10,7 +10,14 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 	data := &ChiselData{}
 	r := bufio.NewReader(file)
 
-	next := syntaxReader(r)
+	last := ""
+	next := func() (string, error) {
+		if last != "" {
+			last = ""
+			return last, nil
+		}
+		return syntaxReader(r)()
+	}
 	for token, err := next(); err == nil; func() { next = syntaxReader(r); token, err = next() }() {
 		if token == ";" {
 			continue
@@ -34,21 +41,12 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 			continue
 		}
 
-		if token == "stat" {
+		if token == "tok" {
 			toks, err := CreateTokens(r)
 			if err != nil {
 				return err
 			}
-			data.AddStaticTokens(toks)
-			continue
-		}
-
-		if token == "dyn" {
-			toks, err := CreateTokens(r)
-			if err != nil {
-				return err
-			}
-			data.AddDynamicTokens(toks)
+			data.AddTokens(toks)
 			continue
 		}
 
@@ -67,7 +65,7 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 				return err
 			}
 			if syntaxTokenType([]byte(eq)) != EQ {
-				return fmt.Errorf("Expected '=', got '%s'!", eq)
+				return fmt.Errorf("Expected '=', got '%s'", eq)
 			}
 
 			next = constructReader(r)

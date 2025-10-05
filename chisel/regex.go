@@ -3,9 +3,259 @@ package chisel
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 )
+
+func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
+	return createConstructValueWithStack(data, value, make(map[string]bool))
+}
+
+func createConstructValueWithStack(data *ChiselData, value string, expandStack map[string]bool) (Regex, error) {
+	r := bufio.NewReader(strings.NewReader(value))
+
+	// Main recursive descent parser
+	var parseExpression func() (Regex, error)
+	var parseTerm func() (Regex, error)
+	var parseFactor func() (Regex, error)
+	var parseAtom func() (Regex, error)
+
+	// Parse alternation: term ('|' term)*
+	parseExpression = func() (Regex, error) {
+		left, err := parseTerm()
+		if err != nil {
+			return nil, err
+		}
+
+		// Check for '|' operators
+		alternatives := []Regex{left}
+		for {
+			if err := skipWhitespace(r); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			b, err := r.ReadByte()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			if b == '|' {
+				right, err := parseTerm()
+				if err != nil {
+					return nil, err
+				}
+				alternatives = append(alternatives, right)
+			} else {
+				r.UnreadByte()
+				break
+			}
+		}
+
+		if len(alternatives) == 1 {
+			return alternatives[0], nil
+		}
+		return &OrRegex{Chain: alternatives}, nil
+	}
+
+	// Parse concatenation: factor+
+	parseTerm = func() (Regex, error) {
+		factors := []Regex{}
+
+		for {
+			if err := skipWhitespace(r); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			// Peek at next character
+			b, err := r.ReadByte()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			// Stop if we hit a terminator or alternation
+			if b == ')' || b == '|' || b == ';' {
+				r.UnreadByte()
+				break
+			}
+
+			r.UnreadByte()
+
+			factor, err := parseFactor()
+			if err != nil {
+				return nil, err
+			}
+			factors = append(factors, factor)
+		}
+
+		if len(factors) == 0 {
+			return nil, fmt.Errorf("expected at least one factor in term")
+		}
+		if len(factors) == 1 {
+			return factors[0], nil
+		}
+		return &ChainRegex{Chain: factors}, nil
+	}
+
+	// Parse factor with optional postfix operator
+	parseFactor = func() (Regex, error) {
+		atom, err := parseAtom()
+		if err != nil {
+			return nil, err
+		}
+
+		// Check for postfix operators
+		if err := skipWhitespace(r); err != nil {
+			if err == io.EOF {
+				return atom, nil
+			}
+			return nil, err
+		}
+
+		b, err := r.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				return atom, nil
+			}
+			return nil, err
+		}
+
+		switch b {
+		case '*':
+			return &MultiplierRegex{RequireOne: false, Inner: atom}, nil
+		case '+':
+			return &MultiplierRegex{RequireOne: true, Inner: atom}, nil
+		case '?':
+			return &OptionalRegex{Inner: atom}, nil
+		default:
+			r.UnreadByte()
+			return atom, nil
+		}
+	}
+
+	// Parse atomic unit: parenthesized expression or identifier
+	parseAtom = func() (Regex, error) {
+		if err := skipWhitespace(r); err != nil {
+			return nil, err
+		}
+
+		c, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle parenthesized expression
+		if c == '(' {
+			inner, err := parseExpression()
+			if err != nil {
+				return nil, err
+			}
+
+			if err := skipWhitespace(r); err != nil {
+				return nil, err
+			}
+
+			closing, err := r.ReadByte()
+			if err != nil {
+				return nil, fmt.Errorf("expected closing ')'")
+			}
+			if closing != ')' {
+				return nil, fmt.Errorf("expected closing ')', got '%c'", closing)
+			}
+
+			return inner, nil
+		}
+
+		// Handle identifier (token or construct name)
+		if isValidIdStarter(c) {
+			var s strings.Builder
+			if err := s.WriteByte(c); err != nil {
+				return nil, err
+			}
+
+			for {
+				c, err := r.ReadByte()
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return nil, err
+				}
+				if isValidId(c) {
+					if err := s.WriteByte(c); err != nil {
+						return nil, err
+					}
+				} else {
+					r.UnreadByte()
+					break
+				}
+			}
+
+			name := s.String()
+
+			// Check if it's a token
+			for _, token := range data.Tokens {
+				if TokenName(token) == name {
+					return &UnitRegex{Token: token}, nil
+				}
+			}
+
+			// Check if it's a construct
+			for _, construct := range data.SimpleConstructs {
+				if construct.Name == name {
+					// Check for circular reference
+					if expandStack[construct.Name] {
+						// Return a reference without expanding (Value will be nil)
+						return &NestedRegex{
+							Construct: Construct{
+								Name:  construct.Name,
+								Value: nil, // nil indicates this is just a reference
+							},
+						}, nil
+					}
+
+					// Mark as being expanded
+					expandStack[construct.Name] = true
+					regex, err := createConstructValueWithStack(data, construct.Value, expandStack)
+					delete(expandStack, construct.Name)
+
+					if err != nil {
+						return nil, err
+					}
+					return &NestedRegex{
+						Construct: Construct{
+							Name:  construct.Name,
+							Value: regex,
+						},
+					}, nil
+				}
+			}
+
+			return nil, fmt.Errorf("failed to find token or construct of name: '%s'", name)
+		}
+
+		return nil, fmt.Errorf("unexpected character: '%c'", c)
+	}
+
+	result, err := parseExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
 
 /*
  * token -> UnitRegex
@@ -17,7 +267,9 @@ import (
  * <regex>? -> OptionalRegex
  */
 
+/*
 func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
+	fmt.Println(value)
 	r := bufio.NewReader(strings.NewReader(value))
 	create := func(r *bufio.Reader) (Regex, error) {
 		if err := skipWhitespace(r); err != nil {
@@ -38,6 +290,7 @@ func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
 			if err != nil {
 				return nil, err
 			}
+			s = s[1 : len(s)-1]
 			return CreateConstructValue(data, s)
 		}
 
@@ -59,15 +312,7 @@ func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
 
 			name := s.String()
 
-			for _, token := range data.StaticTokens {
-				if TokenName(token) == name {
-					return &UnitRegex{
-						Token: token,
-					}, nil
-				}
-			}
-
-			for _, token := range data.DynamicTokens {
+			for _, token := range data.Tokens {
 				if TokenName(token) == name {
 					return &UnitRegex{
 						Token: token,
@@ -93,10 +338,11 @@ func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
 			return nil, fmt.Errorf("Failed to find token or construct of name: '%s'", name)
 		}
 
-		return nil, fmt.Errorf("idk what happened here!")
+		return nil, fmt.Errorf("idk what happened here! %c!", c)
 	}
 
 	regex, err := create(r)
+	fmt.Println(regex.String())
 	if err != nil {
 		return nil, err
 	}
@@ -129,41 +375,42 @@ func CreateConstructValue(data *ChiselData, value string) (Regex, error) {
 			}
 			continue
 		} else if b == '|' {
-			regex = &OrRegex{
-				Left:  regex,
-				Right: nil,
+			switch regex.(type) {
+			case *OrRegex:
+			default:
+				regex = &OrRegex{
+					Chain: []Regex{regex},
+				}
 			}
-			continue
-		} else {
-			regex = &ChainRegex{
-				Left:  regex,
-				Right: nil,
+		} else if b == ';' {
+			return regex, nil
+		} else if isValidIdStarter(b) {
+			switch regex.(type) {
+			case *ChainRegex:
+			default:
+				regex = &ChainRegex{
+					Chain: []Regex{regex},
+				}
 			}
 		}
 
 		r.UnreadByte()
 		rx, err := create(r)
 		if err != nil {
-			switch v := regex.(type) {
-			case *OrRegex:
-				return v.Left, nil
-			case *ChainRegex:
-				return v.Left, nil
-			default:
-				return nil, fmt.Errorf("Expected OrRegex or ChainRegex: %v", v)
-			}
+			return nil, err
 		}
 
 		switch v := regex.(type) {
 		case *OrRegex:
-			v.Right = rx
+			v.Chain = append(v.Chain, rx)
 		case *ChainRegex:
-			v.Right = rx
+			v.Chain = append(v.Chain, rx)
 		default:
 			return nil, fmt.Errorf("Expected OrRegex or ChainRegex: %v", v)
 		}
 	}
 }
+*/
 
 type Counter struct {
 	Count      int
@@ -233,6 +480,10 @@ type UnitRegex struct {
 var unitRegexNum = 0
 
 func (r *UnitRegex) RegexToCppFunction() string {
+	if _, ok := r.Token.(SimpleToken); ok {
+		return ""
+	}
+
 	if r.Count != 0 {
 		return ""
 	}
@@ -241,21 +492,23 @@ func (r *UnitRegex) RegexToCppFunction() string {
 	r.Count = unitRegexNum
 	return fmt.Sprintf(
 		`
-		%s
-		bool parse_unit_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_unit_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
 			auto token = %s; // already undoes on fail so we gucci
 			if (token) nodes.emplace_back(std::move(token));
 			return token;
 		}
 		`,
-		r.Token.TokenToCppFunction(false),
 		r.Count,
-		r.Token.Call("reader"),
+		TokenCall(r.Token, "reader"),
 	)
 }
 
 func (r *UnitRegex) RegexToCppPrototype() string {
+	if _, ok := r.Token.(SimpleToken); ok {
+		return ""
+	}
+
 	if r.Prototyped {
 		return ""
 	}
@@ -263,11 +516,9 @@ func (r *UnitRegex) RegexToCppPrototype() string {
 	r.Prototyped = true
 	return fmt.Sprintf(
 		`
-		%s
-		bool %s;
+		static bool %s;
 		`,
-		r.Token.TokenToCppPrototype(false),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
@@ -301,15 +552,13 @@ func (r *NestedRegex) RegexToCppFunction() string {
 	r.Count = nestedRegexNum
 	return fmt.Sprintf(
 		`
-		%s
-		bool parse_nested_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_nested_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
-			auto *construct = %s; // Should automatically undo on fail so we still gucci
+			auto construct = %s; // Should automatically undo on fail so we still gucci
 			if (construct) nodes.emplace_back(construct);
 			return construct;
 		}
 		`,
-		r.Construct.ConstructToCppFunction(),
 		r.Count,
 		r.Construct.Call("reader"),
 	)
@@ -323,11 +572,9 @@ func (r *NestedRegex) RegexToCppPrototype() string {
 	r.Prototyped = true
 	return fmt.Sprintf(
 		`
-		%s
-		bool %s;
+		static bool %s;
 		`,
-		r.Construct.ConstructToCppPrototype(),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
@@ -347,8 +594,7 @@ func (r *NestedRegex) String() string {
 
 type ChainRegex struct {
 	Counter
-	Left  Regex
-	Right Regex
+	Chain []Regex
 }
 
 var chainRegexNum = 0
@@ -360,23 +606,53 @@ func (r *ChainRegex) RegexToCppFunction() string {
 
 	chainRegexNum++
 	r.Count = chainRegexNum
+
+	var b strings.Builder
+	var chain strings.Builder
+	for i, re := range r.Chain {
+		if re == nil {
+			continue
+		}
+
+		b.WriteString(re.RegexToCppFunction())
+		b.WriteByte('\n')
+
+		if i < len(r.Chain)-1 {
+			if v, ok := re.(*UnitRegex); ok {
+				if _, ok := v.Token.(SimpleToken); ok {
+					continue
+				}
+			}
+			chain.WriteString(fmt.Sprintf("(%s) && ", RegexCall(re, "reader", "nodes")))
+		} else {
+			if v, ok := re.(*UnitRegex); ok {
+				if _, ok := v.Token.(SimpleToken); ok {
+					continue
+				}
+			}
+			chain.WriteString(fmt.Sprintf("(%s)", RegexCall(re, "reader", "nodes")))
+		}
+	}
+
+	c := strings.Trim(strings.TrimSpace(chain.String()), "&")
+
 	return fmt.Sprintf(
 		`
 		%s
-		%s
-		bool parse_chain_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_chain_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
 			auto start = reader.tellg();
-			bool result = (%s) && (%s);
-			if (!result) reader.seekg(start, std::ios::beg);
+			bool result = %s;
+			if (!result) {
+				reader.clear();
+				reader.seekg(start, std::ios::beg);
+			}
 			return result;
 		}
 		`,
-		r.Left.RegexToCppFunction(),
-		RegexToCppFunction(r.Right),
+		b.String(),
 		r.Count,
-		RegexCall(r.Left, "reader", "nodes"),
-		RegexCall(r.Right, "reader", "nodes"),
+		c,
 	)
 }
 
@@ -386,15 +662,24 @@ func (r *ChainRegex) RegexToCppPrototype() string {
 	}
 
 	r.Prototyped = true
+
+	var b strings.Builder
+	for _, re := range r.Chain {
+		if re == nil {
+			continue
+		}
+
+		b.WriteString(re.RegexToCppPrototype())
+		b.WriteByte('\n')
+	}
+
 	return fmt.Sprintf(
 		`
 		%s
-		%s
-		bool %s;
+		static bool %s;
 		`,
-		r.Left.RegexToCppPrototype(),
-		RegexToCppPrototype(r.Right),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		b.String(),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
@@ -406,13 +691,7 @@ func (r *ChainRegex) String() string {
 	s := "Chain {\n" +
 		fmt.Sprintf("%s.Count = %d\n", after, r.Count) +
 		fmt.Sprintf("%s.Prototyped = %v\n", after, r.Prototyped) +
-		fmt.Sprintf("%s.Left = %s\n", after, r.Left.String()) +
-		fmt.Sprintf("%s.Right = %s\n", after, func() string {
-			if r.Right == nil {
-				return "nil"
-			}
-			return r.Right.String()
-		}()) +
+		fmt.Sprintf("%s.Chain = %v\n", after, r.Chain) +
 		before + "}"
 	ChiselTabs--
 	return s
@@ -420,8 +699,7 @@ func (r *ChainRegex) String() string {
 
 type OrRegex struct {
 	Counter
-	Left  Regex
-	Right Regex
+	Chain []Regex
 }
 
 var orRegexNum = 0
@@ -433,23 +711,53 @@ func (r *OrRegex) RegexToCppFunction() string {
 
 	orRegexNum++
 	r.Count = orRegexNum
+
+	var b strings.Builder
+	var chain strings.Builder
+	for i, re := range r.Chain {
+		if re == nil {
+			continue
+		}
+
+		b.WriteString(re.RegexToCppFunction())
+		b.WriteByte('\n')
+
+		if i < len(r.Chain)-1 {
+			if v, ok := re.(*UnitRegex); ok {
+				if _, ok := v.Token.(SimpleToken); ok {
+					continue
+				}
+			}
+			chain.WriteString(fmt.Sprintf("(%s) || ", RegexCall(re, "reader", "nodes")))
+		} else {
+			if v, ok := re.(*UnitRegex); ok {
+				if _, ok := v.Token.(SimpleToken); ok {
+					continue
+				}
+			}
+			chain.WriteString(fmt.Sprintf("(%s)", RegexCall(re, "reader", "nodes")))
+		}
+	}
+
+	c := strings.Trim(strings.TrimSpace(chain.String()), "|")
+
 	return fmt.Sprintf(
 		`
 		%s
-		%s
-		bool parse_or_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_or_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
 			auto start = reader.tellg();
-			bool result = (%s) || (%s);
-			if (!result) reader.seekg(start, std::ios::beg);
+			bool result = %s;
+			if (!result) {
+				reader.clear();
+				reader.seekg(start, std::ios::beg);
+			}
 			return result;
 		}
 		`,
-		r.Left.RegexToCppFunction(),
-		RegexToCppFunction(r.Right),
+		b.String(),
 		r.Count,
-		RegexCall(r.Left, "reader", "nodes"),
-		RegexCall(r.Right, "reader", "nodes"),
+		c,
 	)
 }
 
@@ -459,15 +767,24 @@ func (r *OrRegex) RegexToCppPrototype() string {
 	}
 
 	r.Prototyped = true
+
+	var b strings.Builder
+	for _, re := range r.Chain {
+		if re == nil {
+			continue
+		}
+
+		b.WriteString(re.RegexToCppPrototype())
+		b.WriteByte('\n')
+	}
+
 	return fmt.Sprintf(
 		`
 		%s
-		%s
-		bool %s;
+		static bool %s;
 		`,
-		r.Left.RegexToCppPrototype(),
-		RegexToCppPrototype(r.Right),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		b.String(),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
@@ -479,13 +796,7 @@ func (r *OrRegex) String() string {
 	s := "Or {\n" +
 		fmt.Sprintf("%s.Count = %d\n", after, r.Count) +
 		fmt.Sprintf("%s.Prototyped = %v\n", after, r.Prototyped) +
-		fmt.Sprintf("%s.Left = %s\n", after, r.Left.String()) +
-		fmt.Sprintf("%s.Right = %s\n", after, func() string {
-			if r.Right == nil {
-				return "nil"
-			}
-			return r.Right.String()
-		}()) +
+		fmt.Sprintf("%s.Chain = %v\n", after, r.Chain) +
 		before + "}"
 	ChiselTabs--
 	return s
@@ -532,17 +843,19 @@ func (r *MultiplierRegex) RegexToCppFunction() string {
 		return fmt.Sprintf(
 			`
 			%s
-			bool parse_multiplier_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+			bool Parser::parse_multiplier_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 				Token::skip(reader);
 				auto start = reader.tellg();
 				auto first = %s;
 				if (!first) {
+					reader.clear();
 					reader.seekg(start, std::ios::beg);
 					return false;
 				}
 				for (auto result = first; result; result = %s) {
 					start = reader.tellg();
 				}
+				reader.clear();
 				reader.seekg(start, std::ios::beg);
 				return true;
 			}
@@ -557,12 +870,13 @@ func (r *MultiplierRegex) RegexToCppFunction() string {
 	return fmt.Sprintf(
 		`
 		%s
-		bool parse_multiplier_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_multiplier_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
 			auto start = reader.tellg();
 			for (auto result = %s; result; result = %s) {
 				start = reader.tellg();
 			}
+			reader.clear();
 			reader.seekg(start, std::ios::beg);
 			return true;
 		}
@@ -583,10 +897,10 @@ func (r *MultiplierRegex) RegexToCppPrototype() string {
 	return fmt.Sprintf(
 		`
 		%s
-		bool %s;
+		static bool %s;
 		`,
 		r.Inner.RegexToCppPrototype(),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
@@ -622,12 +936,13 @@ func (r *OptionalRegex) RegexToCppFunction() string {
 	return fmt.Sprintf(
 		`
 		%s
-		bool parse_optional_%d(std::istream &reader, std::vector<ParseNode> &nodes) {
+		bool Parser::parse_optional_%d(std::istream &reader, std::vector<Parser::Node> &nodes) {
 			Token::skip(reader);
 			auto start = reader.tellg();
 			if (!%s) {
+				reader.clear();
 				reader.seekg(start, std::ios::beg);
-				return false;
+				return true;
 			}
 			return true;
 		}
@@ -647,10 +962,10 @@ func (r *OptionalRegex) RegexToCppPrototype() string {
 	return fmt.Sprintf(
 		`
 		%s
-		bool %s;
+		static bool %s;
 		`,
 		r.Inner.RegexToCppPrototype(),
-		RegexCall(r, "std::istream &", "std::vector<ParseNode> &"),
+		RegexCall(r, "std::istream &", "std::vector<Parser::Node> &"),
 	)
 }
 
