@@ -9,7 +9,7 @@
 namespace chisel {
 
 	class Parser {
-		Lexer lexer;
+		std::istream &reader;
 
 	public:
 		class ParseNode;
@@ -94,11 +94,15 @@ namespace chisel {
 	private:
 		/*{{.RegexPrototypes}}*/
 
+		/*{{.ConstructPrototypes}}*/
+
 	public:
-		Parser(std::istream &reader) : lexer(reader) {}
+		Parser(std::istream &reader) : reader(reader) {}
 		~Parser() = default;
 
-		/*{{.ConstructPrototypes}}*/
+		Node parse() {
+			return /*{{.EntryConstructCall}}*/;
+		}
 	};
 
 	/*{{.ConstructDefinitions}}*/

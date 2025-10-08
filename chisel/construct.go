@@ -14,13 +14,15 @@ func (c *ConstructRefRegex) String() string {
 }
 
 type SimpleConstruct struct {
-	Name  string
-	Value string
+	EntryPoint bool
+	Name       string
+	Value      string
 }
 
 type Construct struct {
-	Name  string
-	Value Regex
+	EntryPoint bool
+	Name       string
+	Value      Regex
 }
 
 var prototypedConstructs = map[string]bool{}

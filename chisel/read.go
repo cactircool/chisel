@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func ReadAndWrite(file *os.File, outputPath string) error {
+func ReadAndWrite(file *os.File, outputPath string) (*ChiselData, error) {
 	data := &ChiselData{}
 	r := bufio.NewReader(file)
 
@@ -26,7 +26,7 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 		if token == "prefix" {
 			next = scopeReader('{', '}', r)
 			if token, err = next(); err != nil {
-				return err
+				return nil, err
 			}
 			data.AddPrefix(token)
 			continue
@@ -35,7 +35,7 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 		if token == "suffix" {
 			next = scopeReader('{', '}', r)
 			if token, err = next(); err != nil {
-				return err
+				return nil, err
 			}
 			data.AddSuffix(token)
 			continue
@@ -44,7 +44,7 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 		if token == "tok" {
 			toks, err := CreateTokens(r)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			data.AddTokens(toks)
 			continue
@@ -53,43 +53,46 @@ func ReadAndWrite(file *os.File, outputPath string) error {
 		if token == "skip" {
 			toks, err := CreateTokens(r)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			data.AddSkipTokens(toks)
 			continue
 		}
 
+		arrow := false
+		if token == "->" {
+			arrow = true
+			token, err = next()
+		}
+
 		if syntaxTokenType([]byte(token)) == ID {
 			eq, err := next()
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if syntaxTokenType([]byte(eq)) != EQ {
-				return fmt.Errorf("Expected '=', got '%s'", eq)
+				return nil, fmt.Errorf("Expected '=', got '%s'", eq)
 			}
 
 			next = constructReader(r)
 			c, err := next()
 			if err != nil {
-				return err
+				return nil, err
 			}
 			data.AddSimpleConstruct(SimpleConstruct{
-				Name:  token,
-				Value: c,
+				EntryPoint: arrow,
+				Name:       token,
+				Value:      c,
 			})
 		}
 	}
 
 	if err := data.PopulateConstructs(); err != nil {
-		return err
+		return nil, err
 	}
-
-	// for _, c := range data.Constructs {
-	// 	fmt.Println(c.String())
-	// }
 
 	if err := data.WriteFile(outputPath); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return data, nil
 }

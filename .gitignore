@@ -1,12 +1,4 @@
-main.cpp
-chisel.hpp
-a.out
-template.chisel
-test.file
-t.chisel
-t.chisel.bak
-example
-int.hpp
-t.spec
-t.chisel.bak*
-test*.file
+/main.cpp
+/visitor.hpp
+/chisel.hpp
+*.chisel

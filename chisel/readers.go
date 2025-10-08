@@ -25,6 +25,7 @@ const (
 	PLUS
 	O_PAREN
 	C_PAREN
+	ARROW
 
 	ID
 	STRING
@@ -92,6 +93,9 @@ func syntaxTokenType(token []byte) splitterTokenType {
 	if eq(token, ")") {
 		return C_PAREN
 	}
+	if eq(token, "->") {
+		return ARROW
+	}
 
 	if token[0] == '\'' || token[0] == '"' {
 		return STRING
@@ -133,6 +137,7 @@ func syntaxReader(r *bufio.Reader) func() (string, error) {
 			"(",
 			")",
 			";",
+			"->",
 		}
 
 		if err := skipWhitespace(r); err != nil {

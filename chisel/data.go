@@ -111,6 +111,8 @@ func (d *ChiselData) writeParser(file *os.File) error {
 	var protoBuilder strings.Builder
 	var rDefBuilder strings.Builder
 	var defBuilder strings.Builder
+	var entry *Construct = nil
+
 	for _, c := range d.Constructs {
 		typesBuilder.WriteString(c.Name)
 		typesBuilder.WriteString(",\n")
@@ -123,6 +125,17 @@ func (d *ChiselData) writeParser(file *os.File) error {
 
 		defBuilder.WriteString(c.ConstructToCppFunction())
 		defBuilder.WriteByte('\n')
+
+		if c.EntryPoint {
+			if entry != nil {
+				return fmt.Errorf("Multiple entry point constructs found! Original entry point '%s' collided with '%s'!", entry.Name, c.Name)
+			}
+			entry = &c
+		}
+	}
+
+	if entry == nil {
+		return fmt.Errorf("No entry point found!")
 	}
 
 	b, err := os.ReadFile("src/Parser.hpp")
@@ -136,6 +149,7 @@ func (d *ChiselData) writeParser(file *os.File) error {
 		"ConstructTypes":       fmt.Sprintf("*/%s/*", typesBuilder.String()),
 		"ConstructPrototypes":  fmt.Sprintf("*/%s/*", protoBuilder.String()),
 		"ConstructDefinitions": fmt.Sprintf("*/%s/*", defBuilder.String()),
+		"EntryConstructCall":   fmt.Sprintf("*/%s/*", entry.Call("reader")),
 	})
 	return nil
 }
@@ -151,7 +165,7 @@ func (d *ChiselData) WriteFile(filePath string) error {
 	prolog.WriteString("#include <istream>\n")
 
 	for _, prefix := range d.Prefixes {
-		prolog.WriteString(prefix)
+		prolog.WriteString(strings.Trim(prefix, "{} "))
 	}
 	file.WriteString(prolog.String())
 
@@ -159,9 +173,9 @@ func (d *ChiselData) WriteFile(filePath string) error {
 		return err
 	}
 
-	if err := d.writeLexer(file); err != nil {
-		return err
-	}
+	// if err := d.writeLexer(file); err != nil {
+	// 	return err
+	// }
 
 	if err := d.writeParser(file); err != nil {
 		return err
@@ -183,8 +197,9 @@ func (d *ChiselData) PopulateConstructs() error {
 		}
 
 		d.Constructs = append(d.Constructs, Construct{
-			Name:  c.Name,
-			Value: r,
+			EntryPoint: c.EntryPoint,
+			Name:       c.Name,
+			Value:      r,
 		})
 	}
 	return nil
